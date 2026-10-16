@@ -1,3 +1,5 @@
+import { MESSAGES } from './texts.js';
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== 'POST') {
@@ -13,7 +15,6 @@ export default {
         return Number(userId) === Number(env.OWNER_ID)
       }
 
-      // 1. Защита от добавления в посторонние чаты
       if (update.my_chat_member) {
         const mcm = update.my_chat_member
         const chatId = mcm.chat.id
@@ -26,53 +27,24 @@ export default {
               await fetch(`https://api.telegram.org/bot${botToken}/leaveChat?chat_id=${chatId}`)
               return new Response('OK')
             } else {
+              let chatLink = `https://t.me/${mcm.chat.username}`
+              if (!mcm.chat.username) {
+                try {
+                  const inviteRes = await sendTelegram(botToken, 'exportChatInviteLink', { chat_id: chatId })
+                  if (inviteRes && inviteRes.result) chatLink = inviteRes.result
+                } catch (e) {}
+              }
+
               await db.prepare(
-                `INSERT INTO chats (chat_id, title, mode) VALUES (?, ?, 'pm') 
-                 ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title`
-              ).bind(chatId, mcm.chat.title || 'Chat').run()
+                `INSERT INTO chats (chat_id, title, invite_link, mode) VALUES (?, ?, ?, 'pm') 
+                 ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title, invite_link = excluded.invite_link`
+              ).bind(chatId, mcm.chat.title || 'Chat', chatLink).run()
             }
           }
         }
         return new Response('OK')
       }
 
-      // 2. Ручное одобрение владельцем
-      if (update.chat_member) {
-        const cm = update.chat_member
-        const chatId = cm.chat.id
-        const userId = cm.new_chat_member.user.id
-        const newStatus = cm.new_chat_member.status
-
-        if (newStatus === 'member') {
-          const pendingReq = await db.prepare(
-            `SELECT * FROM join_requests WHERE chat_id = ? AND user_id = ? AND status = 'pending'`
-          ).bind(chatId, userId).first()
-
-          if (pendingReq) {
-            await db.prepare(`UPDATE join_requests SET status = 'approved' WHERE id = ?`).bind(pendingReq.id).run()
-
-            if (pendingReq.message_id) {
-              try {
-                await fetch(`https://api.telegram.org/bot${botToken}/deleteMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chat_id: userId, message_id: pendingReq.message_id })
-                })
-              } catch (e) {}
-            }
-
-            try {
-              await sendTelegram(botToken, 'sendMessage', {
-                chat_id: userId,
-                text: '✅ Ваша заявка на вступление в чат была одобрена администратором!'
-              })
-            } catch (e) {}
-          }
-        }
-        return new Response('OK')
-      }
-
-      // 3. Команды владельца
       if (update.message) {
         const msg = update.message
         const userId = msg.from.id
@@ -95,9 +67,10 @@ export default {
                 })
               } else {
                 await db.prepare(`UPDATE chats SET mode = ? WHERE chat_id = ?`).bind(newMode, chatId).run()
+                const modeName = newMode === 'pm' ? MESSAGES.modePmText : MESSAGES.modeFreeText
                 await sendTelegram(botToken, 'sendMessage', {
                   chat_id: chatId,
-                  text: `✅ Режим чата изменен на: <b>${newMode === 'pm' ? 'Личные сообщения' : 'Свободный (с мьютом)'}</b>`,
+                  text: MESSAGES.modeChanged(modeName),
                   parse_mode: 'HTML'
                 })
               }
@@ -129,10 +102,10 @@ export default {
 
             const stats = await db.prepare(statsQuery).bind(...params).first()
 
-            const responseText = `📊 <b>Статистика принятых заявок:</b>\n\n` +
-              `• За 24 часа: <b>${stats.day_1 || 0}</b>\n` +
-              `• За 7 дней: <b>${stats.days_7 || 0}</b>\n` +
-              `• За все время: <b>${stats.total || 0}</b>`
+            const responseText = MESSAGES.statsHeader +
+              MESSAGES.statsDay(stats.day_1 || 0) +
+              MESSAGES.statsWeek(stats.days_7 || 0) +
+              MESSAGES.statsTotal(stats.total || 0)
 
             await sendTelegram(botToken, 'sendMessage', {
               chat_id: chatId,
@@ -145,7 +118,7 @@ export default {
           if (text === '/chats' && msg.chat.type === 'private') {
             const { results: chats } = await db.prepare(`SELECT * FROM chats`).all()
             if (!chats || chats.length === 0) {
-              await sendTelegram(botToken, 'sendMessage', { chat_id: chatId, text: 'Бот пока не добавлен ни в один чат.' })
+              await sendTelegram(botToken, 'sendMessage', { chat_id: chatId, text: MESSAGES.noChats })
               return new Response('OK')
             }
 
@@ -159,7 +132,8 @@ export default {
 
             await sendTelegram(botToken, 'sendMessage', {
               chat_id: chatId,
-              text: 'Выберите чат для настройки режима:',
+              text: MESSAGES.chatsListTitle,
+              parse_mode: 'HTML',
               reply_markup: { inline_keyboard: inlineKeyboard }
             })
             return new Response('OK')
@@ -170,14 +144,17 @@ export default {
             const banUserId = parts[1]
             if (banUserId) {
               await db.prepare(`INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)`).bind(banUserId).run()
-              await sendTelegram(botToken, 'sendMessage', { chat_id: chatId, text: `🚫 Пользователь ${banUserId} занесен в черный список.` })
+              await sendTelegram(botToken, 'sendMessage', { 
+                chat_id: chatId, 
+                text: MESSAGES.blacklisted(banUserId),
+                parse_mode: 'HTML'
+              })
             }
             return new Response('OK')
           }
         }
       }
 
-      // 4. Обработка нажатий кнопок (капча)
       if (update.callback_query) {
         const cb = update.callback_query
         const data = cb.data
@@ -222,7 +199,7 @@ export default {
           if (userId !== targetUserId) {
             await sendTelegram(botToken, 'answerCallbackQuery', {
               callback_query_id: cb.id,
-              text: 'Эта кнопка не для вас!',
+              text: MESSAGES.wrongUser,
               show_alert: true
             })
             return new Response('OK')
@@ -258,7 +235,7 @@ export default {
 
           await sendTelegram(botToken, 'answerCallbackQuery', {
             callback_query_id: cb.id,
-            text: '✅ Успешно! Заявка одобрена.'
+            text: MESSAGES.alertSuccess
           })
 
           if (message) {
@@ -269,7 +246,8 @@ export default {
             })
             await sendTelegram(botToken, 'sendMessage', {
               chat_id: userId,
-              text: '✅ Верификация пройдена! Добро пожаловать в чат.'
+              text: MESSAGES.successVerify,
+              parse_mode: 'HTML'
             })
           }
 
@@ -277,7 +255,6 @@ export default {
         }
       }
 
-      // 5. Заявки на вступление
       if (update.chat_join_request) {
         const request = update.chat_join_request
         const userId = request.from.id
@@ -298,12 +275,14 @@ export default {
           return new Response('OK')
         }
 
-        let chatConfig = await db.prepare(`SELECT mode FROM chats WHERE chat_id = ?`).bind(chatId).first()
-        const mode = chatConfig ? chatConfig.mode : 'pm'
+        let chatInfo = await db.prepare(`SELECT * FROM chats WHERE chat_id = ?`).bind(chatId).first()
+        const mode = chatInfo ? chatInfo.mode : 'pm'
+        const chatTitle = chatInfo ? chatInfo.title : 'наш чат'
+        const chatLink = chatInfo && chatInfo.invite_link ? chatInfo.invite_link : `https://t.me/`
 
         const inlineKeyboard = {
           inline_keyboard: [[
-            { text: '🤖 Я не робот (Подтвердить)', callback_data: `verify_${chatId}_${userId}` }
+            { text: MESSAGES.verifyButton, callback_data: `verify_${chatId}_${userId}` }
           ]]
         }
 
@@ -313,7 +292,8 @@ export default {
           try {
             const sentMsgRes = await sendTelegram(botToken, 'sendMessage', {
               chat_id: userId,
-              text: `Привет, ${userName}! Подтвердите, что вы не робот, нажав кнопку ниже:`,
+              text: MESSAGES.pmCaptcha(userName, chatTitle, chatLink),
+              parse_mode: 'HTML',
               reply_markup: inlineKeyboard
             })
             if (sentMsgRes && sentMsgRes.result) {
@@ -340,7 +320,7 @@ export default {
 
           const sentMsgRes = await sendTelegram(botToken, 'sendMessage', {
             chat_id: chatId,
-            text: `👋 Добро пожаловать, <a href="tg://user?id=${userId}">${userName}</a>!\n\nПодтверрите, что вы не робот:`,
+            text: MESSAGES.groupCaptcha(userId, userName),
             parse_mode: 'HTML',
             reply_markup: inlineKeyboard
           })
@@ -371,4 +351,4 @@ async function sendTelegram(token, method, payload) {
   })
   return await response.json()
         }
-              
+        
