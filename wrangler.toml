@@ -1,0 +1,11 @@
+name = "Mirellise"
+main = "src/index.js"
+compatibility_date = "2026-03-01"
+
+[vars]
+OWNER_ID = 
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mirellise-db"
+database_id = ""
