@@ -3,7 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-03-01"
 
 [vars]
-OWNER_ID = 
+OWNER_ID = 6825759691
 
 [[d1_databases]]
 binding = "DB"
