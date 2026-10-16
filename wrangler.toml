@@ -8,4 +8,4 @@ OWNER_ID = 6825759691
 [[d1_databases]]
 binding = "DB"
 database_name = "fenrys-db"
-database_id = ""
+database_id = "18bd5c33-9e07-4687-a770-ae3492df72bc"
