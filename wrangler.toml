@@ -1,4 +1,4 @@
-name = "mirellise"
+name = "fenrys"
 main = "index.js"
 compatibility_date = "2026-03-01"
 
@@ -7,5 +7,5 @@ OWNER_ID = 6825759691
 
 [[d1_databases]]
 binding = "DB"
-database_name = "mirellise-db"
-database_id = "4a6c78b3-a03a-4e9d-b68a-7be17cc4688a"
+database_name = "fenrys-db"
+database_id = ""
