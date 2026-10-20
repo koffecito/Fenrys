@@ -14,9 +14,9 @@ export const MESSAGES = {
   alertSuccess: "✅ Готово! Ваша заявка одобрена.",
 
   statsHeader: "📊 <b>Статистика принятых заявок:</b>\n\n",
-  statsDay: (count) => `• За 24 часа: <b>${count}</b>\n`,
-  statsWeek: (count) => `• За 7 дней: <b>${count}</b>\n`,
   statsTotal: (count) => `• За все время: <b>${count}</b>`,
+  statsWeek: (count) => `• За 7 дней: <b>${count}</b>\n`,
+  statsDay: (count) => `• За 24 часа: <b>${count}</b>\n`,
 
   modePmText: "Личные сообщения (с капчей)",
   modeFreeText: "Свободный (с мутом в группе)",
@@ -24,5 +24,7 @@ export const MESSAGES = {
   chatsListTitle: "📋 <b>Выберите чат для настройки режима:</b>",
   noChats: "⚠️ Бот пока не добавлен ни в один чат в качестве администратора.",
 
-  blacklisted: (userId) => `🚫 Пользователь <code>${userId}</code> успешно добавлен в черный список.`
+  blacklisted: (userId) => `🚫 Пользователь <code>${userId}</code> успешно добавлен в черный список.`,
+  unblacklisted: (userId) => `✅ Пользователь <code>${userId}</code> успешно удален из черного списка.`
 };
+  
