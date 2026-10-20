@@ -152,6 +152,44 @@ export default {
             }
             return new Response('OK')
           }
+
+          if (text.startsWith('/unban')) {
+            const parts = text.split(' ')
+            const unbanUserId = parts[1]
+            if (unbanUserId) {
+              await db.prepare(`DELETE FROM blacklist WHERE user_id = ?`).bind(unbanUserId).run()
+              await sendTelegram(botToken, 'sendMessage', { 
+                chat_id: chatId, 
+                text: MESSAGES.unblacklisted(unbanUserId),
+                parse_mode: 'HTML'
+              })
+            } else {
+              await sendTelegram(botToken, 'sendMessage', { 
+                chat_id: chatId, 
+                text: '⚠️ Укажите ID: <code>/unban 123456789</code>',
+                parse_mode: 'HTML'
+              })
+            }
+            return new Response('OK')
+          }
+
+          if (text === '/unlink') {
+            if (msg.chat.type === 'private') {
+              await sendTelegram(botToken, 'sendMessage', {
+                chat_id: chatId,
+                text: 'Команду /unlink нужно использовать внутри группы, которую хотите отвязать.'
+              })
+            } else {
+              await db.prepare(`DELETE FROM chats WHERE chat_id = ?`).bind(chatId).run()
+              await sendTelegram(botToken, 'sendMessage', {
+                chat_id: chatId,
+                text: '🗑 <b>Чат успешно отвязан от бота.</b>',
+                parse_mode: 'HTML'
+              })
+              await fetch(`https://api.telegram.org/bot${botToken}/leaveChat?chat_id=${chatId}`)
+            }
+            return new Response('OK')
+          }
         }
       }
 
@@ -351,4 +389,4 @@ async function sendTelegram(token, method, payload) {
   })
   return await response.json()
         }
-        
+      
