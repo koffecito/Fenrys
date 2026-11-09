@@ -51,6 +51,68 @@ export default {
         const chatId = msg.chat.id
         const text = msg.text || ''
 
+        if (msg.new_chat_members && ['group', 'supergroup'].includes(msg.chat.type)) {
+          let chatInfo = await db.prepare(`SELECT * FROM chats WHERE chat_id = ?`).bind(chatId).first()
+          const mode = chatInfo ? chatInfo.mode : 'pm'
+
+          if (mode === 'free') {
+            for (const newMember of msg.new_chat_members) {
+              if (newMember.is_bot) continue;
+
+              const memberId = newMember.id
+              const memberName = newMember.first_name || 'Пользователь'
+
+              const isBlacklisted = await db.prepare(`SELECT * FROM blacklist WHERE user_id = ?`).bind(memberId).first()
+              if (isBlacklisted) {
+                await fetch(`https://api.telegram.org/bot${botToken}/banChatMember`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ chat_id: chatId, user_id: memberId })
+                })
+                continue;
+              }
+
+              const alreadyVerified = await db.prepare(`SELECT * FROM verified_users WHERE user_id = ?`).bind(memberId).first()
+              if (alreadyVerified) continue;
+
+              await fetch(`https://api.telegram.org/bot${botToken}/restrictChatMember`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: chatId,
+                  user_id: memberId,
+                  permissions: {
+                    can_send_messages: false,
+                    can_send_media_messages: false,
+                    can_send_other_messages: false,
+                    can_add_web_page_previews: false
+                  }
+                })
+              })
+
+              const inlineKeyboard = {
+                inline_keyboard: [[
+                  { text: MESSAGES.verifyButton, callback_data: `verify_${chatId}_${memberId}` }
+                ]]
+              }
+
+              const sentMsgRes = await sendTelegram(botToken, 'sendMessage', {
+                chat_id: chatId,
+                text: MESSAGES.groupCaptcha(memberId, memberName),
+                parse_mode: 'HTML',
+                reply_markup: inlineKeyboard
+              })
+
+              let sentMessageId = sentMsgRes && sentMsgRes.result ? sentMsgRes.result.message_id : null
+
+              await db.prepare(
+                `INSERT INTO join_requests (chat_id, user_id, username, message_id, status) VALUES (?, ?, ?, ?, 'pending')`
+              ).bind(chatId, memberId, memberName, sentMessageId).run()
+            }
+          }
+          return new Response('OK')
+        }
+
         if (msg.chat.type === 'private' && !isOwner(userId)) {
           return new Response('OK')
         }
@@ -245,12 +307,12 @@ export default {
 
           await db.prepare(`INSERT OR IGNORE INTO verified_users (user_id) VALUES (?)`).bind(userId).run()
 
-          await fetch(`https://api.telegram.org/bot${botToken}/approveChatJoinRequest?chat_id=${targetChatId}&user_id=${userId}`)
-
-          await db.prepare(`UPDATE join_requests SET status = 'approved' WHERE chat_id = ? AND user_id = ? AND status = 'pending'`).bind(targetChatId, userId).run()
-
           const chatConfig = await db.prepare(`SELECT mode FROM chats WHERE chat_id = ?`).bind(targetChatId).first()
-          if (chatConfig && chatConfig.mode === 'free') {
+          const chatMode = chatConfig ? chatConfig.mode : 'pm'
+
+          if (chatMode === 'pm') {
+            await fetch(`https://api.telegram.org/bot${botToken}/approveChatJoinRequest?chat_id=${targetChatId}&user_id=${userId}`)
+          } else {
             await fetch(`https://api.telegram.org/bot${botToken}/restrictChatMember`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -265,11 +327,9 @@ export default {
                 }
               })
             })
-
-            if (message) {
-              await fetch(`https://api.telegram.org/bot${botToken}/deleteMessage?chat_id=${targetChatId}&message_id=${message.message_id}`)
-            }
           }
+
+          await db.prepare(`UPDATE join_requests SET status = 'approved' WHERE chat_id = ? AND user_id = ? AND status = 'pending'`).bind(targetChatId, userId).run()
 
           await sendTelegram(botToken, 'answerCallbackQuery', {
             callback_query_id: cb.id,
@@ -282,11 +342,14 @@ export default {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chat_id: message.chat.id, message_id: message.message_id })
             })
-            await sendTelegram(botToken, 'sendMessage', {
-              chat_id: userId,
-              text: MESSAGES.successVerify,
-              parse_mode: 'HTML'
-            })
+            
+            if (chatMode === 'pm') {
+              await sendTelegram(botToken, 'sendMessage', {
+                chat_id: userId,
+                text: MESSAGES.successVerify,
+                parse_mode: 'HTML'
+              })
+            }
           }
 
           return new Response('OK')
@@ -388,5 +451,4 @@ async function sendTelegram(token, method, payload) {
     body: JSON.stringify(payload)
   })
   return await response.json()
-        }
-      
+}
