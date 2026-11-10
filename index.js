@@ -379,10 +379,6 @@ async function sendTelegram(token, method, payload) {
   return await response.json()
 }
 
-//---------
-// FREE MODE: MUTE AND CAPTCHA
-//---------
-
 const MUTED_PERMISSIONS = {
   can_send_messages: false,
   can_send_audios: false,
