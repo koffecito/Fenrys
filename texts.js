@@ -25,6 +25,8 @@ export const MESSAGES = {
   noChats: "⚠️ Бот пока не добавлен ни в один чат в качестве администратора.",
 
   blacklisted: (userId) => `🚫 Пользователь <code>${userId}</code> успешно добавлен в черный список.`,
-  unblacklisted: (userId) => `✅ Пользователь <code>${userId}</code> успешно удален из черного списка.`
+  unblacklisted: (userId) => `✅ Пользователь <code>${userId}</code> успешно удален из черного списка.`,
+
+  unverified: (userId) => `♻️ Верификация пользователя <code>${userId}</code> сброшена. При следующем входе он снова пройдет капчу.`
 };
   

@@ -198,6 +198,26 @@ export default {
             return new Response('OK')
           }
 
+          if (text.startsWith('/unverify')) {
+            const parts = text.trim().split(/\s+/)
+            const targetId = parts[1]
+            if (targetId && /^\d+$/.test(targetId)) {
+              await db.prepare(`DELETE FROM verified_users WHERE user_id = ?`).bind(targetId).run()
+              await sendTelegram(botToken, 'sendMessage', {
+                chat_id: chatId,
+                text: MESSAGES.unverified(targetId),
+                parse_mode: 'HTML'
+              })
+            } else {
+              await sendTelegram(botToken, 'sendMessage', {
+                chat_id: chatId,
+                text: '⚠️ Укажите ID: <code>/unverify 123456789</code>',
+                parse_mode: 'HTML'
+              })
+            }
+            return new Response('OK')
+          }
+
           if (text === '/unlink') {
             if (msg.chat.type === 'private') {
               await sendTelegram(botToken, 'sendMessage', {
@@ -378,6 +398,10 @@ async function sendTelegram(token, method, payload) {
   })
   return await response.json()
 }
+
+//---------
+// FREE MODE: MUTE AND CAPTCHA
+//---------
 
 const MUTED_PERMISSIONS = {
   can_send_messages: false,
