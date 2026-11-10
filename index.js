@@ -84,7 +84,7 @@ export default {
           if (text.startsWith('/mode')) {
             const parts = text.split(' ')
             const newMode = parts[1]
-            if (['pm', 'free'].includes(newMode)) {
+            if (['pm', 'free', 'off'].includes(newMode)) {
               if (msg.chat.type === 'private') {
                 await sendTelegram(botToken, 'sendMessage', {
                   chat_id: chatId,
@@ -92,7 +92,7 @@ export default {
                 })
               } else {
                 await db.prepare(`UPDATE chats SET mode = ? WHERE chat_id = ?`).bind(newMode, chatId).run()
-                const modeName = newMode === 'pm' ? MESSAGES.modePmText : MESSAGES.modeFreeText
+                const modeName = MESSAGES.modeNames[newMode]
                 await sendTelegram(botToken, 'sendMessage', {
                   chat_id: chatId,
                   text: MESSAGES.modeChanged(modeName),
@@ -102,7 +102,7 @@ export default {
             } else {
               await sendTelegram(botToken, 'sendMessage', {
                 chat_id: chatId,
-                text: 'Использование: /mode pm ИЛИ /mode free'
+                text: 'Использование: /mode pm, /mode free ИЛИ /mode off'
               })
             }
             return new Response('OK')
@@ -249,7 +249,7 @@ export default {
           const chat = await db.prepare(`SELECT * FROM chats WHERE chat_id = ?`).bind(targetChatId).first()
           
           if (chat) {
-            const nextMode = chat.mode === 'pm' ? 'free' : 'pm'
+            const nextMode = { pm: 'free', free: 'off', off: 'pm' }[chat.mode] || 'pm'
             await db.prepare(`UPDATE chats SET mode = ? WHERE chat_id = ?`).bind(nextMode, targetChatId).run()
 
             await sendTelegram(botToken, 'answerCallbackQuery', {
@@ -332,6 +332,11 @@ export default {
         const chatId = request.chat.id
         const userName = request.from.first_name || 'Пользователь'
 
+        const chatModeInfo = await db.prepare(`SELECT mode FROM chats WHERE chat_id = ?`).bind(chatId).first()
+        if (chatModeInfo && chatModeInfo.mode === 'off') {
+          return new Response('OK')
+        }
+
         const isBlacklisted = await db.prepare(`SELECT * FROM blacklist WHERE user_id = ?`).bind(userId).first()
         if (isBlacklisted) {
           await fetch(`https://api.telegram.org/bot${botToken}/declineChatJoinRequest?chat_id=${chatId}&user_id=${userId}`)
@@ -398,6 +403,10 @@ async function sendTelegram(token, method, payload) {
   })
   return await response.json()
 }
+
+//---------
+// FREE MODE: MUTE AND CAPTCHA
+//---------
 
 const MUTED_PERMISSIONS = {
   can_send_messages: false,
