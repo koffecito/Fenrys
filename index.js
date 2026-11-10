@@ -45,6 +45,21 @@ export default {
         return new Response('OK')
       }
 
+      if (update.chat_member) {
+        const cm = update.chat_member
+        if (['group', 'supergroup'].includes(cm.chat.type) && !cm.via_join_request) {
+          const wasOut = ['left', 'kicked'].includes(cm.old_chat_member.status)
+          const isIn = cm.new_chat_member.status === 'member'
+          if (wasOut && isIn) {
+            const chatInfo = await db.prepare(`SELECT * FROM chats WHERE chat_id = ?`).bind(cm.chat.id).first()
+            if (chatInfo && chatInfo.mode === 'free') {
+              await startFreeCaptcha(botToken, db, cm.chat.id, cm.new_chat_member.user, false)
+            }
+          }
+        }
+        return new Response('OK')
+      }
+
       if (update.message) {
         const msg = update.message
         const userId = msg.from.id
@@ -52,62 +67,10 @@ export default {
         const text = msg.text || ''
 
         if (msg.new_chat_members && ['group', 'supergroup'].includes(msg.chat.type)) {
-          let chatInfo = await db.prepare(`SELECT * FROM chats WHERE chat_id = ?`).bind(chatId).first()
-          const mode = chatInfo ? chatInfo.mode : 'pm'
-
-          if (mode === 'free') {
+          const chatInfo = await db.prepare(`SELECT * FROM chats WHERE chat_id = ?`).bind(chatId).first()
+          if (chatInfo && chatInfo.mode === 'free') {
             for (const newMember of msg.new_chat_members) {
-              if (newMember.is_bot) continue;
-
-              const memberId = newMember.id
-              const memberName = newMember.first_name || 'Пользователь'
-
-              const isBlacklisted = await db.prepare(`SELECT * FROM blacklist WHERE user_id = ?`).bind(memberId).first()
-              if (isBlacklisted) {
-                await fetch(`https://api.telegram.org/bot${botToken}/banChatMember`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chat_id: chatId, user_id: memberId })
-                })
-                continue;
-              }
-
-              const alreadyVerified = await db.prepare(`SELECT * FROM verified_users WHERE user_id = ?`).bind(memberId).first()
-              if (alreadyVerified) continue;
-
-              await fetch(`https://api.telegram.org/bot${botToken}/restrictChatMember`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: chatId,
-                  user_id: memberId,
-                  permissions: {
-                    can_send_messages: false,
-                    can_send_media_messages: false,
-                    can_send_other_messages: false,
-                    can_add_web_page_previews: false
-                  }
-                })
-              })
-
-              const inlineKeyboard = {
-                inline_keyboard: [[
-                  { text: MESSAGES.verifyButton, callback_data: `verify_${chatId}_${memberId}` }
-                ]]
-              }
-
-              const sentMsgRes = await sendTelegram(botToken, 'sendMessage', {
-                chat_id: chatId,
-                text: MESSAGES.groupCaptcha(memberId, memberName),
-                parse_mode: 'HTML',
-                reply_markup: inlineKeyboard
-              })
-
-              let sentMessageId = sentMsgRes && sentMsgRes.result ? sentMsgRes.result.message_id : null
-
-              await db.prepare(
-                `INSERT INTO join_requests (chat_id, user_id, username, message_id, status) VALUES (?, ?, ?, ?, 'pending')`
-              ).bind(chatId, memberId, memberName, sentMessageId).run()
+              await startFreeCaptcha(botToken, db, chatId, newMember, false)
             }
           }
           return new Response('OK')
@@ -313,20 +276,7 @@ export default {
           if (chatMode === 'pm') {
             await fetch(`https://api.telegram.org/bot${botToken}/approveChatJoinRequest?chat_id=${targetChatId}&user_id=${userId}`)
           } else {
-            await fetch(`https://api.telegram.org/bot${botToken}/restrictChatMember`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: targetChatId,
-                user_id: userId,
-                permissions: {
-                  can_send_messages: true,
-                  can_send_media_messages: true,
-                  can_send_other_messages: true,
-                  can_add_web_page_previews: true
-                }
-              })
-            })
+            await unmuteMember(botToken, targetChatId, userId)
           }
 
           await db.prepare(`UPDATE join_requests SET status = 'approved' WHERE chat_id = ? AND user_id = ? AND status = 'pending'`).bind(targetChatId, userId).run()
@@ -402,32 +352,8 @@ export default {
             }
           } catch (e) {}
         } else if (mode === 'free') {
-          await fetch(`https://api.telegram.org/bot${botToken}/approveChatJoinRequest?chat_id=${chatId}&user_id=${userId}`)
-          
-          await fetch(`https://api.telegram.org/bot${botToken}/restrictChatMember`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: chatId,
-              user_id: userId,
-              permissions: {
-                can_send_messages: false,
-                can_send_media_messages: false,
-                can_send_other_messages: false,
-                can_add_web_page_previews: false
-              }
-            })
-          })
-
-          const sentMsgRes = await sendTelegram(botToken, 'sendMessage', {
-            chat_id: chatId,
-            text: MESSAGES.groupCaptcha(userId, userName),
-            parse_mode: 'HTML',
-            reply_markup: inlineKeyboard
-          })
-          if (sentMsgRes && sentMsgRes.result) {
-            sentMessageId = sentMsgRes.result.message_id
-          }
+          await startFreeCaptcha(botToken, db, chatId, request.from, true)
+          return new Response('OK')
         }
 
         await db.prepare(
@@ -451,4 +377,143 @@ async function sendTelegram(token, method, payload) {
     body: JSON.stringify(payload)
   })
   return await response.json()
+}
+
+//---------
+// FREE MODE: MUTE AND CAPTCHA
+//---------
+
+const MUTED_PERMISSIONS = {
+  can_send_messages: false,
+  can_send_audios: false,
+  can_send_documents: false,
+  can_send_photos: false,
+  can_send_videos: false,
+  can_send_video_notes: false,
+  can_send_voice_notes: false,
+  can_send_polls: false,
+  can_send_other_messages: false,
+  can_add_web_page_previews: false,
+  can_invite_users: false,
+  can_pin_messages: false,
+  can_change_info: false,
+  can_manage_topics: false
+}
+
+const OPEN_PERMISSIONS = {
+  can_send_messages: true,
+  can_send_audios: true,
+  can_send_documents: true,
+  can_send_photos: true,
+  can_send_videos: true,
+  can_send_video_notes: true,
+  can_send_voice_notes: true,
+  can_send_polls: true,
+  can_send_other_messages: true,
+  can_add_web_page_previews: true,
+  can_invite_users: true
+}
+
+async function muteMember(token, chatId, userId) {
+  return await sendTelegram(token, 'restrictChatMember', {
+    chat_id: chatId,
+    user_id: userId,
+    permissions: MUTED_PERMISSIONS,
+    use_independent_chat_permissions: true
+  })
+}
+
+async function unmuteMember(token, chatId, userId) {
+  let permissions = OPEN_PERMISSIONS
+  try {
+    const chatRes = await sendTelegram(token, 'getChat', { chat_id: chatId })
+    if (chatRes && chatRes.ok && chatRes.result && chatRes.result.permissions) {
+      permissions = chatRes.result.permissions
+    }
+  } catch (e) {}
+
+  return await sendTelegram(token, 'restrictChatMember', {
+    chat_id: chatId,
+    user_id: userId,
+    permissions: permissions,
+    use_independent_chat_permissions: true
+  })
+}
+
+async function startFreeCaptcha(token, db, chatId, member, approveRequest) {
+  if (member.is_bot) return
+
+  const memberId = member.id
+  const memberName = member.first_name || 'Пользователь'
+
+  const isBlacklisted = await db.prepare(`SELECT * FROM blacklist WHERE user_id = ?`).bind(memberId).first()
+  if (isBlacklisted) {
+    if (approveRequest) {
+      await sendTelegram(token, 'declineChatJoinRequest', { chat_id: chatId, user_id: memberId })
+    } else {
+      await sendTelegram(token, 'banChatMember', { chat_id: chatId, user_id: memberId })
+    }
+    return
+  }
+
+  const alreadyVerified = await db.prepare(`SELECT * FROM verified_users WHERE user_id = ?`).bind(memberId).first()
+  if (alreadyVerified) {
+    if (approveRequest) {
+      await sendTelegram(token, 'approveChatJoinRequest', { chat_id: chatId, user_id: memberId })
+      await db.prepare(
+        `INSERT INTO join_requests (chat_id, user_id, username, status) VALUES (?, ?, ?, 'approved')`
+      ).bind(chatId, memberId, memberName).run()
+    }
+    return
+  }
+
+  const { results: stale } = await db.prepare(
+    `SELECT message_id FROM join_requests WHERE chat_id = ? AND user_id = ? AND status = 'pending' AND created_at < datetime('now', '-60 seconds')`
+  ).bind(chatId, memberId).all()
+
+  for (const row of stale || []) {
+    if (row.message_id) {
+      await sendTelegram(token, 'deleteMessage', { chat_id: chatId, message_id: row.message_id })
+    }
+  }
+  await db.prepare(
+    `DELETE FROM join_requests WHERE chat_id = ? AND user_id = ? AND status = 'pending' AND created_at < datetime('now', '-60 seconds')`
+  ).bind(chatId, memberId).run()
+
+  const claim = await db.prepare(
+    `INSERT INTO join_requests (chat_id, user_id, username, status)
+     SELECT ?, ?, ?, 'pending'
+     WHERE NOT EXISTS (
+       SELECT 1 FROM join_requests
+       WHERE chat_id = ? AND user_id = ? AND status = 'pending'
+     )`
+  ).bind(chatId, memberId, memberName, chatId, memberId).run()
+
+  if (!claim.meta || !claim.meta.changes) return
+  const rowId = claim.meta.last_row_id
+
+  if (approveRequest) {
+    await sendTelegram(token, 'approveChatJoinRequest', { chat_id: chatId, user_id: memberId })
+  }
+
+  const muteRes = await muteMember(token, chatId, memberId)
+  if (!muteRes || !muteRes.ok) {
+    await db.prepare(`DELETE FROM join_requests WHERE rowid = ?`).bind(rowId).run()
+    return
+  }
+
+  const sentMsgRes = await sendTelegram(token, 'sendMessage', {
+    chat_id: chatId,
+    text: MESSAGES.groupCaptcha(memberId, memberName),
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: MESSAGES.verifyButton, callback_data: `verify_${chatId}_${memberId}` }
+      ]]
+    }
+  })
+
+  if (sentMsgRes && sentMsgRes.result) {
+    await db.prepare(`UPDATE join_requests SET message_id = ? WHERE rowid = ?`).bind(sentMsgRes.result.message_id, rowId).run()
+  }
 }
